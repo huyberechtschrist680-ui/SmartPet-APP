@@ -197,7 +197,9 @@
       await ensureNativeBleReady(ble);
 
       const device = await ble.requestDevice({
-        services: [SERVICE_UUID],
+        // Do not filter by service UUID while scanning. Some ESP32 sketches create
+        // the NUS service but forget to advertise its UUID, which otherwise hides
+        // the device from the picker.
         optionalServices: [SERVICE_UUID],
       });
       nativeDeviceId = device.deviceId;
@@ -251,7 +253,7 @@
       setStatus("正在连接", "connecting");
       setControlsEnabled(false);
       webDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [SERVICE_UUID] }],
+        acceptAllDevices: true,
         optionalServices: [SERVICE_UUID],
       });
       webDevice.addEventListener("gattserverdisconnected", handleDisconnect);
