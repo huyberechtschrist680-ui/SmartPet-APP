@@ -1,0 +1,9 @@
+{
+  "appId": "com.smartpet.blecontrol",
+  "appName": "智能桌宠",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": true
+  }
+}

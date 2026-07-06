@@ -1,0 +1,25 @@
+{
+  "name": "smartpet-ble-android",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capacitor Android wrapper for the SmartPet BLE controller.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/prepare-capacitor-web.js",
+    "android:add": "npm run build && npx cap add android && npx cap sync android && npm run android:patch-ble-permissions && npm run assets:generate",
+    "android:sync": "npm run build && npx cap sync android && npm run android:patch-ble-permissions",
+    "android:open": "npm run android:sync && npx cap open android",
+    "android:run": "npm run android:sync && npx cap run android",
+    "assets:generate": "npx capacitor-assets generate --android",
+    "android:patch-ble-permissions": "node scripts/patch-android-ble-permissions.js"
+  },
+  "dependencies": {
+    "@capacitor-community/bluetooth-le": "latest",
+    "@capacitor/android": "latest",
+    "@capacitor/core": "latest"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "latest",
+    "@capacitor/cli": "latest"
+  }
+}

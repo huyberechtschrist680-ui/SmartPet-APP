@@ -1,0 +1,12 @@
+# Dependencies
+web/node_modules/
+
+# Generated Capacitor output
+web/dist/
+web/android/
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
