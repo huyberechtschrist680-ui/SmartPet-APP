@@ -2,6 +2,9 @@
   const SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
   const RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
   const TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+  const SMARTPET_NAME = "SmartPet";
+  const SMARTPET_NAME_MATCH = SMARTPET_NAME.toLowerCase();
+  const NATIVE_SCAN_TIMEOUT_MS = 12000;
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -12,12 +15,22 @@
   let nativeDeviceId = null;
   let nativeNotificationListener = null;
   let nativeDisconnectListener = null;
+  let nativeScanListener = null;
+  let nativeScanTimeoutId = null;
+  let nativeScanResolve = null;
+  let nativeScanDevices = new Map();
   let activeTransport = null;
   let initializedNativeBle = false;
+  let isConnecting = false;
+  let isScanning = false;
   let writeQueue = Promise.resolve();
 
   const statusEl = document.querySelector("#connectionStatus");
   const connectButton = document.querySelector("#connectButton");
+  const disconnectButton = document.querySelector("#disconnectButton");
+  const scanPanel = document.querySelector("#scanPanel");
+  const scanList = document.querySelector("#scanList");
+  const scanCancelButton = document.querySelector("#scanCancelButton");
   const supportNotice = document.querySelector("#supportNotice");
   const logEl = document.querySelector("#log");
   const commandButtons = Array.from(document.querySelectorAll("[data-command]"));
@@ -66,6 +79,15 @@
   function setStatus(text, state) {
     statusEl.textContent = text;
     statusEl.className = `status ${state || ""}`.trim();
+  }
+
+  function isConnected() {
+    return activeTransport === "native" || activeTransport === "web";
+  }
+
+  function updateConnectionButtons() {
+    connectButton.disabled = isConnecting || isScanning || isConnected();
+    disconnectButton.disabled = !isConnected();
   }
 
   function setControlsEnabled(enabled) {
@@ -142,14 +164,27 @@
     return "";
   }
 
-  function handleDisconnect() {
+  function deviceNameMatches(name) {
+    return (name || "").toLowerCase().includes(SMARTPET_NAME_MATCH);
+  }
+
+  function clearConnectionState() {
     webRxCharacteristic = null;
     webTxCharacteristic = null;
+    webDevice = null;
     nativeDeviceId = null;
     activeTransport = null;
     setControlsEnabled(false);
+    updateConnectionButtons();
+  }
+
+  function handleDisconnect() {
+    const hadConnection = isConnected() || nativeDeviceId || webDevice;
+    clearConnectionState();
     setStatus("已断开", "disconnected");
-    appendLog("BLE disconnected");
+    if (hadConnection) {
+      appendLog("BLE disconnected");
+    }
   }
 
   async function cleanupNativeListeners() {
@@ -157,6 +192,128 @@
     await nativeDisconnectListener?.remove?.();
     nativeNotificationListener = null;
     nativeDisconnectListener = null;
+  }
+
+  function showScanPanel() {
+    scanPanel.hidden = false;
+  }
+
+  function hideScanPanel() {
+    scanPanel.hidden = true;
+  }
+
+  function renderScanDevices() {
+    scanList.textContent = "";
+
+    if (nativeScanDevices.size === 0) {
+      const empty = document.createElement("div");
+      empty.className = "scan-empty";
+      empty.textContent = "正在扫描名称包含 SmartPet 的设备...";
+      scanList.append(empty);
+      return;
+    }
+
+    nativeScanDevices.forEach((device) => {
+      const button = document.createElement("button");
+      button.className = "scan-device";
+      button.type = "button";
+
+      const name = document.createElement("span");
+      name.textContent = device.name || SMARTPET_NAME;
+
+      const meta = document.createElement("span");
+      meta.className = "scan-device-meta";
+      meta.textContent = typeof device.rssi === "number" ? `${device.rssi} dBm` : "选择";
+
+      button.append(name, meta);
+      button.addEventListener("click", () => {
+        finishNativeScan(device);
+      });
+      scanList.append(button);
+    });
+  }
+
+  function normalizeScanResult(result) {
+    const scanDevice = result?.device || result || {};
+    const deviceId = scanDevice.deviceId || result?.deviceId || scanDevice.id || result?.id;
+    const name = scanDevice.name || result?.name || result?.localName || scanDevice.localName || "";
+
+    if (!deviceId || !deviceNameMatches(name)) {
+      return null;
+    }
+
+    return {
+      deviceId,
+      name,
+      rssi: typeof result?.rssi === "number" ? result.rssi : scanDevice.rssi,
+    };
+  }
+
+  async function stopNativeScan() {
+    const ble = getNativeBle();
+
+    if (nativeScanTimeoutId) {
+      clearTimeout(nativeScanTimeoutId);
+      nativeScanTimeoutId = null;
+    }
+
+    await nativeScanListener?.remove?.();
+    nativeScanListener = null;
+
+    if (ble && typeof ble.stopLEScan === "function") {
+      await ble.stopLEScan().catch(() => {});
+    }
+
+    isScanning = false;
+    hideScanPanel();
+    updateConnectionButtons();
+  }
+
+  async function finishNativeScan(device) {
+    const resolve = nativeScanResolve;
+    nativeScanResolve = null;
+    await stopNativeScan();
+    resolve?.(device || null);
+  }
+
+  async function chooseNativeSmartPetDevice(ble) {
+    if (typeof ble.requestLEScan !== "function" || typeof ble.addListener !== "function") {
+      return ble.requestDevice({
+        namePrefix: SMARTPET_NAME,
+        optionalServices: [SERVICE_UUID],
+      });
+    }
+
+    nativeScanDevices = new Map();
+    isScanning = true;
+    showScanPanel();
+    renderScanDevices();
+    updateConnectionButtons();
+
+    return new Promise(async (resolve, reject) => {
+      nativeScanResolve = resolve;
+
+      try {
+        nativeScanListener = await ble.addListener("onScanResult", (result) => {
+          const device = normalizeScanResult(result);
+          if (!device) {
+            return;
+          }
+          nativeScanDevices.set(device.deviceId, device);
+          renderScanDevices();
+        });
+
+        await ble.requestLEScan({ allowDuplicates: false });
+        nativeScanTimeoutId = setTimeout(() => {
+          appendLog("Scan finished: no more SmartPet devices found");
+          finishNativeScan(null);
+        }, NATIVE_SCAN_TIMEOUT_MS);
+      } catch (error) {
+        nativeScanResolve = null;
+        await stopNativeScan();
+        reject(error);
+      }
+    });
   }
 
   async function ensureNativeBleReady(ble) {
@@ -183,6 +340,37 @@
     }
   }
 
+  async function connectNativeDevice(ble, device) {
+    nativeDeviceId = device.deviceId;
+    await cleanupNativeListeners();
+
+    nativeDisconnectListener = await ble.addListener(`disconnected|${nativeDeviceId}`, handleDisconnect);
+    await ble.connect({ deviceId: nativeDeviceId, timeout: 10000 });
+    if (typeof ble.requestConnectionPriority === "function") {
+      await ble.requestConnectionPriority({
+        deviceId: nativeDeviceId,
+        connectionPriority: 1,
+      }).catch(() => {});
+    }
+
+    nativeNotificationListener = await ble.addListener(
+      `notification|${nativeDeviceId}|${SERVICE_UUID}|${TX_UUID}`,
+      (event) => handleIncomingText(decodeBleValue(event?.value)),
+    );
+    await ble.startNotifications({
+      deviceId: nativeDeviceId,
+      service: SERVICE_UUID,
+      characteristic: TX_UUID,
+    });
+
+    activeTransport = "native";
+    setControlsEnabled(true);
+    setStatus("已连接", "connected");
+    updateConnectionButtons();
+    appendLog(`Native BLE connected${device.name ? `: ${device.name}` : ""}`);
+    await sendCommand("state");
+  }
+
   async function connectNativeSmartPet() {
     const ble = getNativeBle();
     if (!ble) {
@@ -192,47 +380,27 @@
 
     try {
       hideNotice();
-      setStatus("正在连接", "connecting");
+      setStatus("正在扫描", "connecting");
       setControlsEnabled(false);
+      updateConnectionButtons();
       await ensureNativeBleReady(ble);
 
-      const device = await ble.requestDevice({
-        // Do not filter by service UUID while scanning. Some ESP32 sketches create
-        // the NUS service but forget to advertise its UUID, which otherwise hides
-        // the device from the picker.
-        optionalServices: [SERVICE_UUID],
-      });
-      nativeDeviceId = device.deviceId;
-      await cleanupNativeListeners();
-
-      nativeDisconnectListener = await ble.addListener(`disconnected|${nativeDeviceId}`, handleDisconnect);
-      await ble.connect({ deviceId: nativeDeviceId, timeout: 10000 });
-      if (typeof ble.requestConnectionPriority === "function") {
-        await ble.requestConnectionPriority({
-          deviceId: nativeDeviceId,
-          connectionPriority: 1,
-        }).catch(() => {});
+      const device = await chooseNativeSmartPetDevice(ble);
+      if (!device) {
+        setStatus("未连接", "");
+        appendLog("No SmartPet device selected");
+        return;
       }
 
-      nativeNotificationListener = await ble.addListener(
-        `notification|${nativeDeviceId}|${SERVICE_UUID}|${TX_UUID}`,
-        (event) => handleIncomingText(decodeBleValue(event?.value)),
-      );
-      await ble.startNotifications({
-        deviceId: nativeDeviceId,
-        service: SERVICE_UUID,
-        characteristic: TX_UUID,
-      });
-
-      activeTransport = "native";
-      setControlsEnabled(true);
-      setStatus("已连接", "connected");
-      appendLog(`Native BLE connected${device.name ? `: ${device.name}` : ""}`);
-      await sendCommand("state");
+      setStatus("正在连接", "connecting");
+      await connectNativeDevice(ble, device);
     } catch (error) {
-      nativeDeviceId = null;
-      activeTransport = null;
-      setControlsEnabled(false);
+      const failedDeviceId = nativeDeviceId;
+      await cleanupNativeListeners();
+      if (failedDeviceId && typeof ble.disconnect === "function") {
+        await ble.disconnect({ deviceId: failedDeviceId }).catch(() => {});
+      }
+      clearConnectionState();
       setStatus("未连接", "");
       appendLog(`ERR: ${error.message || error}`);
     }
@@ -252,8 +420,9 @@
       hideNotice();
       setStatus("正在连接", "connecting");
       setControlsEnabled(false);
+      updateConnectionButtons();
       webDevice = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
+        filters: [{ namePrefix: SMARTPET_NAME }],
         optionalServices: [SERVICE_UUID],
       });
       webDevice.addEventListener("gattserverdisconnected", handleDisconnect);
@@ -268,21 +437,85 @@
       activeTransport = "web";
       setControlsEnabled(true);
       setStatus("已连接", "connected");
-      appendLog("Web Bluetooth connected");
+      updateConnectionButtons();
+      appendLog(`Web Bluetooth connected${webDevice.name ? `: ${webDevice.name}` : ""}`);
       await sendCommand("state");
     } catch (error) {
-      activeTransport = null;
-      setControlsEnabled(false);
+      webTxCharacteristic?.removeEventListener("characteristicvaluechanged", handleWebNotification);
+      webDevice?.removeEventListener("gattserverdisconnected", handleDisconnect);
+      if (webDevice?.gatt?.connected) {
+        webDevice.gatt.disconnect();
+      }
+      clearConnectionState();
       setStatus("未连接", "");
       appendLog(`ERR: ${error.message || error}`);
     }
   }
 
   async function connectSmartPet() {
-    if (isNativeCapacitor()) {
-      await connectNativeSmartPet();
-    } else {
-      await connectWebSmartPet();
+    if (isConnecting || isScanning) {
+      return;
+    }
+    if (isConnected()) {
+      appendLog("Already connected. Disconnect before selecting another device.");
+      updateConnectionButtons();
+      return;
+    }
+
+    isConnecting = true;
+    updateConnectionButtons();
+    try {
+      if (isNativeCapacitor()) {
+        await connectNativeSmartPet();
+      } else {
+        await connectWebSmartPet();
+      }
+    } finally {
+      isConnecting = false;
+      updateConnectionButtons();
+    }
+  }
+
+  async function disconnectSmartPet() {
+    if (!isConnected()) {
+      return;
+    }
+
+    connectButton.disabled = true;
+    disconnectButton.disabled = true;
+    setControlsEnabled(false);
+    setStatus("正在断开", "connecting");
+
+    const transport = activeTransport;
+    const deviceId = nativeDeviceId;
+    const ble = getNativeBle();
+
+    try {
+      if (transport === "native" && ble && deviceId) {
+        if (typeof ble.stopNotifications === "function") {
+          await ble.stopNotifications({
+            deviceId,
+            service: SERVICE_UUID,
+            characteristic: TX_UUID,
+          }).catch(() => {});
+        }
+        await cleanupNativeListeners();
+        if (typeof ble.disconnect === "function") {
+          await ble.disconnect({ deviceId }).catch(() => {});
+        }
+      }
+
+      if (transport === "web" && webDevice) {
+        webTxCharacteristic?.removeEventListener("characteristicvaluechanged", handleWebNotification);
+        webDevice.removeEventListener("gattserverdisconnected", handleDisconnect);
+        if (webDevice.gatt?.connected) {
+          webDevice.gatt.disconnect();
+        }
+      }
+    } finally {
+      clearConnectionState();
+      setStatus("已断开", "disconnected");
+      appendLog("BLE disconnected");
     }
   }
 
@@ -349,6 +582,11 @@
   }
 
   connectButton.addEventListener("click", connectSmartPet);
+  disconnectButton.addEventListener("click", disconnectSmartPet);
+  scanCancelButton.addEventListener("click", () => {
+    appendLog("Scan canceled");
+    finishNativeScan(null);
+  });
 
   commandButtons.forEach((button) => {
     button.addEventListener("click", () => {
@@ -366,4 +604,5 @@
 
   updateSupportNotice();
   setControlsEnabled(false);
+  updateConnectionButtons();
 })();

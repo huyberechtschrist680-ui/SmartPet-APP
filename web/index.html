@@ -56,9 +56,20 @@
 
     .status-row {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr);
       gap: 10px;
       align-items: center;
+    }
+
+    .connection-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .connection-actions button {
+      padding: 0 12px;
+      white-space: nowrap;
     }
 
     .status {
@@ -210,6 +221,58 @@
       display: block;
     }
 
+    .scan-panel {
+      margin-bottom: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+    }
+
+    .scan-panel[hidden] {
+      display: none;
+    }
+
+    .scan-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .scan-title {
+      color: var(--muted);
+      font-weight: 750;
+    }
+
+    .scan-list {
+      display: grid;
+      gap: 8px;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .scan-device {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      padding: 9px 10px;
+      background: var(--panel-soft);
+      text-align: left;
+    }
+
+    .scan-device-meta,
+    .scan-empty {
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .scan-empty {
+      padding: 4px 0;
+    }
+
     .log {
       height: 220px;
       overflow: auto;
@@ -231,7 +294,12 @@
       }
 
       .status-row {
-        min-width: 360px;
+        min-width: 470px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .connection-actions {
+        grid-template-columns: repeat(2, auto);
       }
 
       .grid {
@@ -250,9 +318,20 @@
       <h1>智能桌宠 BLE 控制台</h1>
       <div class="status-row">
         <div id="connectionStatus" class="status">未连接</div>
-        <button id="connectButton" class="primary" type="button">连接 SmartPet</button>
+        <div class="connection-actions">
+          <button id="connectButton" class="primary" type="button">连接 SmartPet</button>
+          <button id="disconnectButton" type="button" disabled>断开连接</button>
+        </div>
       </div>
     </header>
+
+    <div id="scanPanel" class="scan-panel" hidden>
+      <div class="scan-panel-head">
+        <div class="scan-title">选择 SmartPet 设备</div>
+        <button id="scanCancelButton" type="button">取消扫描</button>
+      </div>
+      <div id="scanList" class="scan-list"></div>
+    </div>
 
     <div id="supportNotice" class="notice">
       当前浏览器不支持 Web Bluetooth。请使用支持 Web Bluetooth 的浏览器，并通过安全上下文打开本页面。
